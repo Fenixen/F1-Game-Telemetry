@@ -1,0 +1,109 @@
+# Závodní inženýr pro F1 25
+
+Pit wall na iPadu pro hru **EA SPORTS F1 25**. Backend běží na herním PC (Windows), čte UDP telemetrii
+ze hry a funguje jako závodní inženýr: sleduje závod, počítá strategii a **mluví na tebe rádiem**.
+Frontend je webová aplikace – na iPadu ji otevřeš v Safari, nic se neinstaluje.
+
+```
+F1 25 ──UDP 20777──▶ backend (Python, PC) ──WebSocket──▶ iPad (Safari)
+        60 Hz            parser → stav → inženýr          kokpit · rádio · hlas
+```
+
+## Co to umí
+
+| Obrazovka | Obsah |
+|---|---|
+| **Kokpit** | pozice, čas kola a živá delta vůči nejlepšímu kolu, sektory, odstupy, rychlost / řazení / pedály, pneumatiky (jádro, povrch, tlak, brzdy, opotřebení), ERS, palivo |
+| **Časomíra** | celé pole: ztráty, intervaly, poslední / nejlepší kolo, sektory (fialová / zelená), pneumatiky, zastávky, penalizace |
+| **Mapa** | mapa trati kreslená z jízdy, pozice všech vozů, žluté vlajky, předpověď počasí |
+| **Strategie** | plán zastávky, projekce opotřebení, okno zastávky, odhad pozice po výjezdu z boxů, sady pneumatik, palivo, srovnání tempa se soupeři |
+| **Telemetrie** | rychlost, plyn, brzda, řazení a volant podle vzdálenosti na trati – aktuální vs. poslední vs. nejlepší kolo |
+| **Setup** | aktuální nastavení vozu + konkrétní doporučení podle toho, co auto dělá (nedotáčivost, přetáčivost, přehřívání pneumatik…) |
+| **Vůz** | poškození karoserie, pneumatik a brzd, opotřebení pohonné jednotky |
+| **Rádio** | inženýr hlásí kola a odstupy, DRS, pneumatiky, palivo, počasí, safety car, vlajky, penalizace, poškození, „box box“, výsledek. Ptát se můžeš tlačítky na iPadu nebo **tlačítkem na volantu** |
+
+Nekritické hlášky si inženýr nechá na rovinku, kritické (vlajky, SC, box, penalizace) řekne hned.
+
+## Spuštění (Windows)
+
+1. Nainstaluj [Python 3.11+](https://www.python.org/downloads/) (zaškrtni *Add python.exe to PATH*).
+2. Dvojklik na **`start.bat`**. První spuštění si samo vytvoří prostředí a nainstaluje závislost (`aiohttp`).
+3. V okně se vypíše adresa pro iPad, např. `http://192.168.1.50:8080`. Otevři ji v Safari.
+4. Windows se při prvním spuštění zeptá na firewall – povol přístup pro **soukromé sítě**.
+
+Bez hry si aplikaci vyzkoušíš přes **`demo.bat`** (simulovaný závod).
+
+### Nastavení ve hře
+
+`Settings → Telemetry Settings`:
+
+| Položka | Hodnota |
+|---|---|
+| UDP Telemetry | On |
+| UDP Broadcast Mode | Off |
+| UDP IP Address | `127.0.0.1` (hra i aplikace na stejném PC) |
+| UDP Port | `20777` |
+| UDP Send Rate | 60 Hz |
+| UDP Format | **2025** |
+
+Dotazy z volantu: v `Settings → Controls` přiřaď tlačítkům **UDP Action 1–8**
+(1 odstupy, 2 pneumatiky, 3 palivo, 4 strategie, 5 počasí, 6 poškození, 7 tempo, 8 zopakuj).
+
+### iPad
+
+- **Sdílet → Přidat na plochu** = celá obrazovka bez lišty Safari.
+- Český hlas: `Nastavení → Zpřístupnění → Předčítání obsahu → Hlasy → Čeština` (stáhni „vylepšenou“ variantu).
+- Zhasínání displeje: `Nastavení → Displej a jas → Uzamčení → Nikdy`.
+
+### Volby
+
+```
+start.bat --http-port 8080 --udp-port 20777      porty
+start.bat --forward 127.0.0.1:20778              přeposílat telemetrii dál (SimHub apod.)
+start.bat --demo --demo-speed 4 --demo-laps 8    simulátor
+```
+
+`build_exe.bat` sestaví samostatný `dist\RaceEngineer.exe` přes PyInstaller.
+
+## Jak to funguje pod kapotou
+
+```
+race_engineer/
+  udp/packets.py      binární layouty paketů F1 25 (formát 2025) – dekódování i kódování
+  udp/constants.py    číselníky (tratě, týmy, směsi, penalizace, bity tlačítek)
+  state.py            model session složený z paketů; vrací doménové události (kolo, box…)
+  strategy.py         projekce opotřebení, okno zastávky, pozice po výjezdu, výběr směsi
+  engineer/engine.py  rádio: fronta, priority, cooldowny, čekání na rovinku
+  engineer/rules.py   pravidla inženýra a odpovědi na dotazy
+  engineer/setup_advisor.py  doporučení k nastavení
+  snapshots.py        JSON pohledy pro frontend (20 Hz rychlý, 4 Hz pomalý)
+  server.py           aiohttp: UDP listener, WebSocket, statické soubory
+  simulator.py        falešná hra – generuje skutečné binární pakety
+frontend/             čistý HTML/CSS/JS bez build kroku a bez CDN (funguje offline v LAN)
+tests/                pytest
+```
+
+- Layout každého paketu je deklarovaný jednou a při importu se ověřuje proti oficiálním velikostem
+  datagramů (např. Car Telemetry = 1352 B). Stejné layouty používá simulátor, takže parser a testy
+  nemůžou „odjet“ od sebe.
+- UDP je vstup ze sítě: každý datagram se před dekódováním kontroluje na délku a formát,
+  vadný se zahodí. Jména jezdců se ve frontendu vždy escapují.
+- WebSocket odmítá spojení z cizích originů; server jinak nemá přihlášení – počítá se s domácí sítí.
+- Hlas běží v prohlížeči (Web Speech API), takže na PC není potřeba žádný TTS engine.
+
+## Vývoj
+
+```
+pip install -r requirements-dev.txt
+python -m pytest
+python -m race_engineer --demo
+```
+
+## Omezení
+
+- Parser je napsaný podle specifikace UDP formátu 2025 a ověřený na velikostech paketů a simulátoru;
+  **proti běžící hře zatím testovaný nebyl**.
+- Hra nepřijímá nastavení vozu po síti – doporučené hodnoty je potřeba přepsat v garáži ručně.
+  Rozsahy hodnot v poradci jsou orientační.
+- Hlasový vstup (mluvení na inženýra) není: Safari povolí mikrofon jen přes HTTPS. Dotazy jdou tlačítky.
+- V online lobby hra u soupeřů s vypnutou telemetrií posílá jen omezená data.

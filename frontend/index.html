@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Inženýr">
+<meta name="theme-color" content="#0a0c0f">
+<title>Závodní inženýr · F1 25</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div id="splash">
+  <div class="splash-box">
+    <div class="brand-mark"></div>
+    <h1>Závodní inženýr</h1>
+    <p>Pit wall pro F1 25. Klepnutím zapneš rádio – inženýr pak mluví sám.</p>
+    <button id="splash-go" class="btn primary big">Nastoupit na pit wall</button>
+    <button id="splash-mute" class="btn ghost">Pokračovat bez zvuku</button>
+  </div>
+</div>
+
+<div id="app">
+  <header id="top">
+    <div class="brand"><span class="brand-mark sm"></span><span>INŽENÝR</span></div>
+    <div id="top-session" class="top-session">—</div>
+    <div id="top-progress" class="top-chip">—</div>
+    <div id="top-flag" class="flag-pill" hidden></div>
+    <div id="top-weather" class="top-chip">—</div>
+    <button id="radio-toggle" class="btn ghost sm" aria-label="Rádio">Rádio</button>
+    <div id="conn" class="conn off" title="Spojení"><i></i><span>offline</span></div>
+  </header>
+  <nav id="tabs"></nav>
+  <main id="main">
+    <div id="nodata" class="nodata">
+      <h2>Čekám na telemetrii z F1 25…</h2>
+      <ol>
+        <li>Ve hře otevři <b>Settings → Telemetry Settings</b>.</li>
+        <li><b>UDP Telemetry: On</b>, <b>UDP Format: 2025</b>, port <b>20777</b>, <b>Send Rate: 60 Hz</b>.</li>
+        <li><b>UDP IP Address</b>: <code>127.0.0.1</code>, pokud hra běží na stejném PC jako tahle aplikace.</li>
+        <li>Vyjeď na trať – data naskočí sama.</li>
+      </ol>
+      <p class="muted" id="nodata-state">Bez spojení se serverem.</p>
+    </div>
+    <div id="views"></div>
+  </main>
+  <aside id="radio">
+    <div class="radio-head">
+      <span>TÝMOVÉ RÁDIO</span>
+      <button id="radio-mute" class="btn ghost sm">🔊</button>
+    </div>
+    <div id="radio-feed" class="radio-feed"></div>
+    <div id="radio-ask" class="radio-ask"></div>
+  </aside>
+</div>
+<script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
