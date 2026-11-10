@@ -27,11 +27,20 @@ Nekritické hlášky si inženýr nechá na rovinku, kritické (vlajky, SC, box,
 ## Spuštění (Windows)
 
 1. Nainstaluj [Python 3.11+](https://www.python.org/downloads/) (zaškrtni *Add python.exe to PATH*).
-2. Dvojklik na **`start.bat`**. První spuštění si samo vytvoří prostředí a nainstaluje závislost (`aiohttp`).
-3. V okně se vypíše adresa pro iPad, např. `http://192.168.1.50:8080`. Otevři ji v Safari.
-4. Windows se při prvním spuštění zeptá na firewall – povol přístup pro **soukromé sítě**.
+2. Stáhni projekt přes Git (ne jako zip – viz *Řešení problémů*):
+   ```
+   git clone -b claude/f1-25-race-engineer-app-q67ddf https://github.com/Fenixen/F1-Game-Telemetry.git
+   cd F1-Game-Telemetry
+   ```
+3. Spusť **`start.bat`** – dvojklikem v Průzkumníku, nebo v terminálu:
+   - **PowerShell** (výchozí terminál ve Windows 11): `.\start.bat`
+   - **cmd**: `start.bat`
 
-Bez hry si aplikaci vyzkoušíš přes **`demo.bat`** (simulovaný závod).
+   První spuštění si samo vytvoří prostředí a nainstaluje závislost (`aiohttp`).
+4. V okně se vypíše adresa pro iPad, např. `http://192.168.1.50:8080`. Otevři ji v Safari.
+5. Windows se při prvním spuštění zeptá na firewall – povol přístup pro **soukromé sítě**.
+
+Bez hry si aplikaci vyzkoušíš přes **`demo.bat`** (v PowerShellu `.\demo.bat`) – simulovaný závod.
 
 ### Nastavení ve hře
 
@@ -58,12 +67,22 @@ Dotazy z volantu: v `Settings → Controls` přiřaď tlačítkům **UDP Action 
 ### Volby
 
 ```
-start.bat --http-port 8080 --udp-port 20777      porty
-start.bat --forward 127.0.0.1:20778              přeposílat telemetrii dál (SimHub apod.)
-start.bat --demo --demo-speed 4 --demo-laps 8    simulátor
+.\start.bat --http-port 8080 --udp-port 20777      porty
+.\start.bat --forward 127.0.0.1:20778              přeposílat telemetrii dál (SimHub apod.)
+.\start.bat --demo --demo-speed 4 --demo-laps 8    simulátor
 ```
 
 `build_exe.bat` sestaví samostatný `dist\RaceEngineer.exe` přes PyInstaller.
+
+## Řešení problémů
+
+| Příznak | Příčina a řešení |
+|---|---|
+| *„Inteligentní řízení aplikací zablokoval aplikaci s nebezpečnou příponou souboru“* | Smart App Control blokuje nepodepsané `.bat` soubory označené jako stažené z internetu (zip z GitHubu). Stáhni projekt přes `git clone`, nebo ve složce projektu v PowerShellu spusť `Get-ChildItem -Recurse \| Unblock-File`. Smart App Control nevypínej – podle verze Windows ho nemusí jít zapnout zpět. |
+| *„The term 'start.bat' is not recognized…“* | PowerShell nespouští soubory z aktuální složky bez cesty. Použij `.\start.bat`. |
+| Nechceš `.bat` vůbec | Totéž ručně: `py -m venv .venv`, `.venv\Scripts\python -m pip install -r requirements.txt`, `.venv\Scripts\python -m race_engineer` (pro demo přidej `--demo`). |
+| iPad se nepřipojí | Povol aplikaci ve firewallu pro soukromé sítě a zkontroluj, že iPad i PC jsou ve stejné Wi-Fi. |
+| Aplikace čeká na hru | Ve hře `UDP Format: 2025`, port `20777`, IP `127.0.0.1`; na konzoli ve stejné síti zadej IP počítače. |
 
 ## Jak to funguje pod kapotou
 
