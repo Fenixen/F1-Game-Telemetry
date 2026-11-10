@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import socket
+import sys
 import threading
 
-from aiohttp import web
-
 from . import simulator
-from .server import create_app
+from .server import serve
 
 
 def lan_addresses() -> list[str]:
@@ -30,6 +30,8 @@ def lan_addresses() -> list[str]:
 
 
 def main() -> None:
+    if sys.version_info < (3, 10):
+        sys.exit("Závodní inženýr potřebuje Python 3.10 nebo novější (python.org).")
     parser = argparse.ArgumentParser(prog="race_engineer", description="Závodní inženýr pro F1 25")
     parser.add_argument("--http-port", type=int, default=8080, help="port webového rozhraní (výchozí 8080)")
     parser.add_argument("--udp-port", type=int, default=20777, help="UDP port telemetrie ze hry (výchozí 20777)")
@@ -60,8 +62,15 @@ def main() -> None:
             daemon=True).start()
         print("  DEMO: běží simulovaný závod.\n")
 
-    app = create_app(args.udp_host, args.udp_port, forward)
-    web.run_app(app, host="0.0.0.0", port=args.http_port, print=None, access_log=None)
+    try:
+        asyncio.run(serve("0.0.0.0", args.http_port, args.udp_host, args.udp_port, forward))
+    except KeyboardInterrupt:
+        print("\n  Inženýr končí. Díky za závod!")
+    except OSError as exc:
+        # Most common case: the port is taken (another copy of the app, or SimHub on 20777)
+        print(f"\n  Nepodařilo se otevřít port: {exc}")
+        print("  Běží už aplikace jinde? Případně zkus jiný port: --http-port / --udp-port.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

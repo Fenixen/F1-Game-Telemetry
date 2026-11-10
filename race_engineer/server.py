@@ -7,20 +7,18 @@ import logging
 import struct
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
-
-from aiohttp import WSMsgType, web
+from typing import Callable
 
 from . import snapshots
 from .engineer import setup_advisor
 from .engineer.rules import Engineer
 from .state import RaceState
 from .udp.packets import UnsupportedFormat, parse_packet
+from .webserver import WebServer, WebSocket, WebSocketClosed
 
 log = logging.getLogger("race_engineer")
 
 FAST_HZ, SLOW_HZ, ENGINEER_HZ = 20, 4, 5
-MAX_WS_MESSAGE = 4096  # clients only ever send tiny JSON commands
 
 FRONTEND_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent)) / "frontend"
 
@@ -52,7 +50,7 @@ class Hub:
 
     def __init__(self):
         self.state = RaceState()
-        self.clients: set[web.WebSocketResponse] = set()
+        self.clients: set[WebSocket] = set()
         self.engineer = Engineer(self.state, self._on_radio)
         self._outline_sent = -1
 
@@ -71,8 +69,8 @@ class Hub:
         for ws in list(self.clients):
             try:
                 await ws.send_str(payload)
-            except (ConnectionError, RuntimeError):
-                self.clients.discard(ws)
+            except WebSocketClosed:
+                self.clients.discard(ws)  # dead or too slow: the rest of the clients keep getting data
 
     async def _every(self, hz: float, job) -> None:
         while True:
@@ -99,7 +97,8 @@ class Hub:
     async def _engineer_tick(self) -> None:
         self.engineer.tick()
 
-    async def run_background(self, app: web.Application):
+    async def start(self, udp_host: str, udp_port: int, forward: tuple[str, int] | None) -> Callable[[], None]:
+        """Starts the UDP listener and the periodic jobs; returns a function that stops them."""
         tasks = [
             asyncio.create_task(self._every(FAST_HZ, self._fast_tick)),
             asyncio.create_task(self._every(SLOW_HZ, self._slow_tick)),
@@ -107,43 +106,41 @@ class Hub:
         ]
         loop = asyncio.get_running_loop()
         protocol = TelemetryProtocol(self)
-        transport, _ = await loop.create_datagram_endpoint(
-            lambda: protocol, local_addr=(app["udp_host"], app["udp_port"]))
-        if app["forward"]:
-            host, port = app["forward"]
+        transport, _ = await loop.create_datagram_endpoint(lambda: protocol, local_addr=(udp_host, udp_port))
+        if forward:
             protocol.forward_transport, _ = await loop.create_datagram_endpoint(
-                asyncio.DatagramProtocol, remote_addr=(host, port))
-        yield
-        for task in tasks:
-            task.cancel()
-        transport.close()
-        if protocol.forward_transport:
-            protocol.forward_transport.close()
+                asyncio.DatagramProtocol, remote_addr=forward)
+
+        def stop() -> None:
+            for task in tasks:
+                task.cancel()
+            transport.close()
+            if protocol.forward_transport:
+                protocol.forward_transport.close()
+        return stop
 
     # ------------------------------------------------------------------ websocket
 
-    async def ws_handler(self, request: web.Request) -> web.WebSocketResponse:
-        # Browsers send Origin; refuse pages from other sites trying to read our telemetry
-        origin = request.headers.get("Origin")
-        if origin and urlparse(origin).netloc != request.host:
-            raise web.HTTPForbidden(text="cross-origin WebSocket refused")
-        ws = web.WebSocketResponse(heartbeat=20, max_msg_size=MAX_WS_MESSAGE)
-        await ws.prepare(request)
-        await ws.send_json({"t": "hello", "d": {
-            "radio": list(self.engineer.history)[-60:], "verbosity": self.engineer.verbosity,
-            "issues": setup_advisor.catalog(),
-        }})
-        await ws.send_json({"t": "outline", "d": snapshots.outline(self.state)})
+    async def ws_handler(self, ws: WebSocket) -> None:
+        try:
+            await ws.send_json({"t": "hello", "d": {
+                "radio": list(self.engineer.history)[-60:], "verbosity": self.engineer.verbosity,
+                "issues": setup_advisor.catalog(),
+            }})
+            await ws.send_json({"t": "outline", "d": snapshots.outline(self.state)})
+        except WebSocketClosed:
+            return
         self.clients.add(ws)
         try:
-            async for msg in ws:
-                if msg.type == WSMsgType.TEXT:
-                    await self._on_command(ws, msg.data)
+            async for text in ws.messages():
+                try:
+                    await self._on_command(ws, text)
+                except WebSocketClosed:
+                    break
         finally:
             self.clients.discard(ws)
-        return ws
 
-    async def _on_command(self, ws: web.WebSocketResponse, raw: str) -> None:
+    async def _on_command(self, ws: WebSocket, raw: str) -> None:
         try:
             cmd = json.loads(raw)
             kind = cmd["t"]
@@ -160,25 +157,14 @@ class Hub:
             await self.broadcast("verbosity", cmd["v"])
 
 
-async def _index(_: web.Request) -> web.FileResponse:
-    return web.FileResponse(FRONTEND_DIR / "index.html", headers={"Cache-Control": "no-cache"})
-
-
-@web.middleware
-async def _no_cache(request: web.Request, handler):
-    response = await handler(request)
-    if request.path.startswith("/static/"):
-        response.headers["Cache-Control"] = "no-cache"  # always revalidate so app updates show up
-    return response
-
-
-def create_app(udp_host: str = "0.0.0.0", udp_port: int = 20777,
-               forward: tuple[str, int] | None = None) -> web.Application:
+async def serve(http_host: str = "0.0.0.0", http_port: int = 8080, udp_host: str = "0.0.0.0",
+                udp_port: int = 20777, forward: tuple[str, int] | None = None) -> None:
+    """Runs until cancelled (Ctrl+C)."""
     hub = Hub()
-    app = web.Application(middlewares=[_no_cache])
-    app.update(hub=hub, udp_host=udp_host, udp_port=udp_port, forward=forward)
-    app.cleanup_ctx.append(hub.run_background)
-    app.router.add_get("/", _index)
-    app.router.add_get("/ws", hub.ws_handler)
-    app.router.add_static("/static/", FRONTEND_DIR)
-    return app
+    stop = await hub.start(udp_host, udp_port, forward)
+    server = await WebServer(FRONTEND_DIR, hub.ws_handler).start(http_host, http_port)
+    try:
+        async with server:
+            await server.serve_forever()
+    finally:
+        stop()

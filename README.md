@@ -26,7 +26,7 @@ Nekritické hlášky si inženýr nechá na rovinku, kritické (vlajky, SC, box,
 
 ## Spuštění (Windows)
 
-1. Nainstaluj [Python 3.11+](https://www.python.org/downloads/) (zaškrtni *Add python.exe to PATH*).
+1. Nainstaluj [Python 3.10+](https://www.python.org/downloads/) (zaškrtni *Add python.exe to PATH*).
 2. Stáhni projekt přes Git (ne jako zip – viz *Řešení problémů*):
    ```
    git clone -b claude/f1-25-race-engineer-app-q67ddf https://github.com/Fenixen/F1-Game-Telemetry.git
@@ -36,7 +36,7 @@ Nekritické hlášky si inženýr nechá na rovinku, kritické (vlajky, SC, box,
    - **PowerShell** (výchozí terminál ve Windows 11): `.\start.bat`
    - **cmd**: `start.bat`
 
-   První spuštění si samo vytvoří prostředí a nainstaluje závislost (`aiohttp`).
+   Aplikace používá jen standardní knihovnu Pythonu – nic se nestahuje ani neinstaluje.
 4. V okně se vypíše adresa pro iPad, např. `http://192.168.1.50:8080`. Otevři ji v Safari.
 5. Windows se při prvním spuštění zeptá na firewall – povol přístup pro **soukromé sítě**.
 
@@ -80,7 +80,8 @@ Dotazy z volantu: v `Settings → Controls` přiřaď tlačítkům **UDP Action 
 |---|---|
 | *„Inteligentní řízení aplikací zablokoval aplikaci s nebezpečnou příponou souboru“* | Smart App Control blokuje nepodepsané `.bat` soubory označené jako stažené z internetu (zip z GitHubu). Stáhni projekt přes `git clone`, nebo ve složce projektu v PowerShellu spusť `Get-ChildItem -Recurse \| Unblock-File`. Smart App Control nevypínej – podle verze Windows ho nemusí jít zapnout zpět. |
 | *„The term 'start.bat' is not recognized…“* | PowerShell nespouští soubory z aktuální složky bez cesty. Použij `.\start.bat`. |
-| Nechceš `.bat` vůbec | Totéž ručně: `py -m venv .venv`, `.venv\Scripts\python -m pip install -r requirements.txt`, `.venv\Scripts\python -m race_engineer` (pro demo přidej `--demo`). |
+| Nechceš `.bat` vůbec | Totéž ručně: `py -3 -m race_engineer` (pro demo přidej `--demo`). |
+| Port je obsazený | Neběží už aplikace v jiném okně? Jiné porty nastavíš přes `--http-port` a `--udp-port`. |
 | iPad se nepřipojí | Povol aplikaci ve firewallu pro soukromé sítě a zkontroluj, že iPad i PC jsou ve stejné Wi-Fi. |
 | Aplikace čeká na hru | Ve hře `UDP Format: 2025`, port `20777`, IP `127.0.0.1`; na konzoli ve stejné síti zadej IP počítače. |
 
@@ -96,7 +97,8 @@ race_engineer/
   engineer/rules.py   pravidla inženýra a odpovědi na dotazy
   engineer/setup_advisor.py  doporučení k nastavení
   snapshots.py        JSON pohledy pro frontend (20 Hz rychlý, 4 Hz pomalý)
-  server.py           aiohttp: UDP listener, WebSocket, statické soubory
+  server.py           UDP listener, periodické odesílání, příkazy z iPadu
+  webserver.py        vlastní HTTP + WebSocket server (RFC 6455) jen nad asyncio
   simulator.py        falešná hra – generuje skutečné binární pakety
 frontend/             čistý HTML/CSS/JS bez build kroku a bez CDN (funguje offline v LAN)
 tests/                pytest
@@ -108,6 +110,8 @@ tests/                pytest
 - UDP je vstup ze sítě: každý datagram se před dekódováním kontroluje na délku a formát,
   vadný se zahodí. Jména jezdců se ve frontendu vždy escapují.
 - WebSocket odmítá spojení z cizích originů; server jinak nemá přihlášení – počítá se s domácí sítí.
+- Žádné závislosti: HTTP i WebSocket server je napsaný nad `asyncio` ze standardní knihovny.
+  Nic se nekompiluje, takže aplikaci nerozbije ani úplně nová verze Pythonu.
 - Hlas běží v prohlížeči (Web Speech API), takže na PC není potřeba žádný TTS engine.
 
 ## Vývoj

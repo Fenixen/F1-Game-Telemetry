@@ -1,1 +1,1 @@
-aiohttp>=3.9,<4
+# Aplikace pouziva jen standardni knihovnu Pythonu (3.10+), zadne zavislosti.
