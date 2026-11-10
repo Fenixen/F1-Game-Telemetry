@@ -12,21 +12,30 @@ from . import simulator
 from .server import serve
 
 
-def lan_addresses() -> list[str]:
-    """Best-effort list of this PC's IPv4 addresses reachable from the iPad."""
-    found = set()
+def lan_addresses() -> tuple[str | None, list[str]]:
+    """(address the iPad should use, other candidates) for this PC.
+
+    The primary one is the interface the OS routes outgoing traffic through,
+    which on a home PC is the Wi-Fi/Ethernet connected to the router.
+    """
+    primary = None
     try:
         # No packet is sent: connecting a UDP socket only asks the OS which interface it would use
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
             probe.connect(("192.0.2.1", 9))
-            found.add(probe.getsockname()[0])
+            primary = probe.getsockname()[0]
     except OSError:
         pass
+    others = set()
     try:
-        found.update(info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
+        others.update(info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET))
     except OSError:
         pass
-    return sorted(a for a in found if not a.startswith("127."))
+    # 127.x = this PC only, 169.254.x = adapter without a router (unusable from the iPad)
+    usable = sorted(a for a in others if not a.startswith(("127.", "169.254.")) and a != primary)
+    if primary and primary.startswith(("127.", "169.254.", "0.")):
+        primary = None
+    return primary, usable
 
 
 def main() -> None:
@@ -51,8 +60,13 @@ def main() -> None:
     print("\n  ZÁVODNÍ INŽENÝR · F1 25")
     print("  ───────────────────────────────────────────")
     print(f"  Telemetrie:  UDP port {args.udp_port} (formát 2025)")
-    for address in lan_addresses() or ["<IP-tohoto-PC>"]:
-        print(f"  iPad:        http://{address}:{args.http_port}")
+    primary, others = lan_addresses()
+    if primary:
+        print(f"  iPad:        http://{primary}:{args.http_port}")
+    else:
+        print(f"  iPad:        http://<IP-tohoto-PC>:{args.http_port}  (zjisti příkazem ipconfig)")
+    for address in others:
+        print(f"  (jiná síť:   http://{address}:{args.http_port} – použij jen když ta nahoře nejde)")
     print(f"  Tento PC:    http://localhost:{args.http_port}")
     print("  Ukončení:    Ctrl+C\n")
 
