@@ -13,16 +13,27 @@ F1 25 ──UDP 20777──▶ backend (Python, PC) ──WebSocket──▶ iPa
 
 | Obrazovka | Obsah |
 |---|---|
+| **Závod** | hlavní obrazovka na jízdu: obří čísla – pozice, delta, odstupy s trendem, pneumatiky barvou, palivo, baterie, plán zastávky, vlajky přes celou šířku a poslední hláška rádia |
 | **Kokpit** | pozice, čas kola a živá delta vůči nejlepšímu kolu, sektory, odstupy, rychlost / řazení / pedály, pneumatiky (jádro, povrch, tlak, brzdy, opotřebení), ERS, palivo |
 | **Časomíra** | celé pole: ztráty, intervaly, poslední / nejlepší kolo, sektory (fialová / zelená), pneumatiky, zastávky, penalizace |
 | **Mapa** | mapa trati kreslená z jízdy, pozice všech vozů, žluté vlajky, předpověď počasí |
 | **Strategie** | plán zastávky, projekce opotřebení, okno zastávky, odhad pozice po výjezdu z boxů, sady pneumatik, palivo, srovnání tempa se soupeři |
-| **Telemetrie** | rychlost, plyn, brzda, řazení a volant podle vzdálenosti na trati – aktuální vs. poslední vs. nejlepší kolo |
-| **Setup** | aktuální nastavení vozu + konkrétní doporučení podle toho, co auto dělá (nedotáčivost, přetáčivost, přehřívání pneumatik…) |
+| **Telemetrie** | mapa trati s kurzorem (klepneš do grafu → vidíš, kde to je), zatáčky Z1, Z2…, tabulka „kde ztrácíš a proč“, rychlost/plyn/brzda/řazení/volant – aktuální vs. poslední vs. nejlepší vs. nejlepší uložené kolo |
+| **Setup** | doporučení přímo z telemetrie (prokluz kol → nedotáčivost/přetáčivost, blokování kol, teploty, opotřebení, speed trap), tvoje setupy na téhle trati seřazené podle nejlepšího kola, ruční výběr problému |
 | **Vůz** | poškození karoserie, pneumatik a brzd, opotřebení pohonné jednotky |
 | **Rádio** | inženýr hlásí kola a odstupy, DRS, pneumatiky, palivo, počasí, safety car, vlajky, penalizace, poškození, „box box“, výsledek. Ptát se můžeš tlačítky na iPadu nebo **tlačítkem na volantu** |
 
-Nekritické hlášky si inženýr nechá na rovinku, kritické (vlajky, SC, box, penalizace) řekne hned.
+Nekritické hlášky si inženýr nechá na rovinku, kritické (vlajky, SC/VSC, červená, box, penalizace) řekne hned.
+Mluví přirozeně a pokaždé trochu jinak; po kvalifikačním kole počká, až hra přepočítá pořadí, a v tréninku řekne,
+ve které zatáčce ztrácíš nejvíc.
+
+### Co si aplikace pamatuje
+
+Po každém platném kole se pro danou trať uloží **nejrychlejší kolo** (jako referenční telemetrie), **mapa trati** a **setup**,
+se kterým jsi kolo zajel. Příště tak máš mapu i srovnání hned od začátku. Když skončí session, na iPadu zůstanou poslední data
+(s upozorněním nahoře), dokud nová session nepošle svoje.
+
+Data jsou v `%LOCALAPPDATA%\RaceEngineer` (jiná složka přes `--data-dir`). Demo nic neukládá.
 
 ## Spuštění (Windows)
 
@@ -53,7 +64,7 @@ Bez hry si aplikaci vyzkoušíš přes **`demo.bat`** (v PowerShellu `.\demo.bat
 | UDP IP Address | `127.0.0.1` (hra i aplikace na stejném PC) |
 | UDP Port | `20777` |
 | UDP Send Rate | 60 Hz |
-| UDP Format | **2025** |
+| UDP Format | **2025**, nebo **2026** se sezónním balíčkem 2026 |
 
 Dotazy z volantu: v `Settings → Controls` přiřaď tlačítkům **UDP Action 1–8**
 (1 odstupy, 2 pneumatiky, 3 palivo, 4 strategie, 5 počasí, 6 poškození, 7 tempo, 8 zopakuj).
@@ -70,6 +81,9 @@ Dotazy z volantu: v `Settings → Controls` přiřaď tlačítkům **UDP Action 
 .\start.bat --http-port 8080 --udp-port 20777      porty
 .\start.bat --forward 127.0.0.1:20778              přeposílat telemetrii dál (SimHub apod.)
 .\start.bat --demo --demo-speed 4 --demo-laps 8    simulátor
+.\start.bat --demo --demo-format 2026              simulátor ve formátu 2026 (aktivní aero, overtake)
+.\start.bat --record                               nahrát telemetrii ze hry do souboru (pro ladění)
+.\start.bat --replay soubor.f1rec.gz                přehrát nahraný záznam bez hry
 ```
 
 `build_exe.bat` sestaví samostatný `dist\RaceEngineer.exe` přes PyInstaller.
@@ -124,8 +138,12 @@ python -m race_engineer --demo
 
 ## Omezení
 
-- Parser je napsaný podle specifikace UDP formátu 2025 a ověřený na velikostech paketů a simulátoru;
-  **proti běžící hře zatím testovaný nebyl**.
+- Formát **2025** je ověřený proti běžící hře. Formát **2026** (sezónní balíček) je napsaný podle komunitního popisu
+  struktur (oficiální PDF od EA nebylo k dispozici); velikosti všech paketů sedí, ale proti hře zatím ověřený není.
+  Když se něco chová divně, spusť aplikaci s `--record` a pošli záznam.
+- Zatáčky Z1, Z2… se hledají z rychlosti na referenčním kole, takže číslování nemusí odpovídat oficiálním číslům zatáček
+  a rychlé zatáčky bez zpomalení se nepočítají.
+- Doporučení setupu z prokluzu pneumatik je heuristika: prahové hodnoty jsou odhad, ber je jako návrh.
 - Hra nepřijímá nastavení vozu po síti – doporučené hodnoty je potřeba přepsat v garáži ručně.
   Rozsahy hodnot v poradci jsou orientační.
 - Hlasový vstup (mluvení na inženýra) není: Safari povolí mikrofon jen přes HTTPS. Dotazy jdou tlačítky.

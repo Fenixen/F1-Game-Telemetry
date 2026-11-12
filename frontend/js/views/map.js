@@ -81,6 +81,21 @@ function draw() {
       if (!flagged && d >= s3 && s3) ctx.strokeStyle = "#c9a227";
       ctx.beginPath(); ctx.moveTo(X(px), Z(pz)); ctx.lineTo(X(x), Z(z)); ctx.stroke();
     }
+    // 2026: active aero zones (straight mode allowed) drawn as a thin green line beside the track
+    const aero = latest?.session.aeroZones || [];
+    if (aero.length) {
+      ctx.strokeStyle = "#2fe074"; ctx.lineWidth = 2; ctx.setLineDash([6, 5]);
+      for (const zone of aero) {
+        ctx.beginPath();
+        let started = false;
+        for (const [x, z, d] of pts) {
+          if (d < zone.s || d > zone.e) continue;
+          if (started) ctx.lineTo(X(x), Z(z) - 9); else { ctx.moveTo(X(x), Z(z) - 9); started = true; }
+        }
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
     const [sx, sz] = pts[0];
     ctx.fillStyle = "#fff"; ctx.fillRect(X(sx) - 2, Z(sz) - 9, 4, 18);
   }

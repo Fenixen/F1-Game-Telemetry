@@ -75,6 +75,12 @@ ISSUES = {
         ("rear_suspension", -2, "měkčí zadní pružiny pomohou dostat výkon na zem"),
         ("rear_toe", +0.03, "víc sbíhavosti vzadu stabilizuje auto při akceleraci"),
     ]),
+    "oversteer_mid": ("Přetáčivost uprostřed zatáček", [
+        ("rear_arb", -2, "měkčí zadní stabilizátor dá zadní nápravě víc gripu"),
+        ("front_arb", +1, "tužší předek přesune část náklonu dopředu a uklidní zadek"),
+        ("rear_wing", +2, "víc zadního přítlaku stabilizuje auto"),
+        ("rear_toe", +0.03, "víc sbíhavosti vzadu = stabilnější zadní náprava"),
+    ]),
     "oversteer_fast": ("Přetáčivost v rychlých zatáčkách", [
         ("rear_wing", +3, "víc zadního přítlaku stabilizuje auto ve vysoké rychlosti"),
         ("front_wing", -1, "posun aero rovnováhy dozadu"),
@@ -198,3 +204,61 @@ def observations(state: RaceState) -> list[dict]:
 
 def catalog() -> list[dict]:
     return [{"issue": key, "label": label} for key, (label, _) in ISSUES.items()]
+
+
+def recommend(state: RaceState) -> dict:
+    """Setup changes the telemetry asks for: wheel-slip balance + tyre temperatures/wear + speed trap."""
+    from collections import Counter
+
+    from ..analysis import corner_name_at, detect_corners
+    from ..state import TRACE_BUCKET_M
+
+    found: dict[str, dict] = {}
+
+    def add(issue: str, reason: str, score: float) -> None:
+        item = found.setdefault(issue, {"issue": issue, "label": ISSUES[issue][0], "reasons": [], "score": 0.0})
+        item["reasons"].append(reason)
+        item["score"] = max(item["score"], score)
+
+    summary = state.balance.summary()
+    corners = detect_corners(state.reference_trace(), TRACE_BUCKET_M)
+    for d in state.balance.diagnose():
+        reason = d["reason"]
+        if d["issue"] == "lockups" and summary and corners:
+            spots = Counter(corner_name_at(corners, m) for m in summary["where"]["lock_front"] + summary["where"]["lock_rear"])
+            top = [name for name, _ in spots.most_common(3) if name]
+            if top:
+                reason += f" Nejčastěji v {', '.join(top)}."
+        add(d["issue"], reason, d["score"])
+    notes = []
+    for o in observations(state):
+        if o["issue"] in ISSUES:
+            add(o["issue"], o["text"], 1.2)
+        else:
+            notes.append(o["text"])
+    items = sorted(found.values(), key=lambda x: -x["score"])
+    for item in items:
+        item["changes"] = advise(state.setup, item["issue"])["changes"][:3]
+    return {"items": items, "notes": notes, "laps": summary["laps"] if summary else 0}
+
+
+def library(state: RaceState) -> list[dict]:
+    """Setups driven on this track, fastest first, with what differs from the current one."""
+    from ..storage import setup_key
+
+    if not state.session:
+        return []
+    current_key = setup_key(state.setup) if state.setup else None
+    out = []
+    for entry in state.store.track(state.session["track_id"])["setups"][:8]:
+        diff = []
+        for key, (label, *_rest) in PARAMS.items():
+            if key == "fuel_load" or not state.setup:
+                continue
+            theirs, mine = entry["setup"].get(key), state.setup.get(key)
+            if theirs is not None and mine is not None and abs(theirs - mine) > 1e-6:
+                diff.append({"label": label, "from": _fmt(key, mine), "to": _fmt(key, theirs)})
+        out.append({"best_ms": entry["best_ms"], "laps": entry["laps"], "date": entry.get("date", ""),
+                    "session": entry.get("session", 0), "current": entry["key"] == current_key,
+                    "diff": diff, "view": describe(entry["setup"])})
+    return out

@@ -73,9 +73,17 @@ function fast(f) {
   el.steer.style.left = `${50 + clamp(f.steer, -1, 1) * 50}%`;
   const lit = Math.round((f.rev / 100) * 15);
   el.revLeds.forEach((led, i) => { led.className = i < lit ? (i < 5 ? "g" : i < 10 ? "r" : "p") : ""; });
-  el.drs.className = `pill ${f.drs ? "on" : f.drsOk ? "warn" : ""}`;
+  if (f.aero) {
+    // 2026 rules: no DRS, active aero instead + overtake mode
+    el.drs.textContent = f.aero.mode ? "AERO: ROVINKA" : "AERO: ZATÁČKA";
+    el.drs.className = `pill ${f.aero.mode ? "on" : ""}`;
+    el.g.textContent = "OVERTAKE";
+    el.g.className = `pill ${f.aero.otActive ? "on" : f.aero.otAvail ? "warn" : ""}`;
+  } else {
+    el.drs.className = `pill ${f.drs ? "on" : f.drsOk ? "warn" : ""}`;
+  }
   el.lim.className = `pill ${f.pitLim ? "warn" : ""}`;
-  el.g.textContent = `G ${Math.abs(f.gLat).toFixed(1)} / ${f.gLon.toFixed(1)}`;
+  if (!f.aero) el.g.textContent = `G ${Math.abs(f.gLat).toFixed(1)} / ${f.gLon.toFixed(1)}`;
   el.rpm.textContent = `${f.rpm} rpm`;
   el.cur.textContent = fmtLap(f.lapMs).slice(0, -2);
   el.invalid.hidden = !f.invalid;

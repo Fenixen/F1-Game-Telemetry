@@ -87,7 +87,8 @@ class _Car:
 
 
 class Simulator:
-    def __init__(self, laps: int = 8, seed: int = 7, player_pit_lap: int | None = None):
+    def __init__(self, laps: int = 8, seed: int = 7, player_pit_lap: int | None = None, fmt: int = 2025):
+        self.spec = P.SPECS[fmt]
         self.rng = random.Random(seed)
         self.track = _Track()
         self.total_laps = laps
@@ -268,14 +269,16 @@ class Simulator:
     # ------------------------------------------------------------------ packet encoding
 
     def _packet(self, pid: int, body: bytes) -> bytes:
-        return P.build_header(pid, self.uid, self.t, self.frame, PLAYER_IDX) + body
+        return P.build_header(pid, self.uid, self.t, self.frame, PLAYER_IDX, self.spec.fmt) + body
 
     def _event(self, code: str, details: dict | None = None) -> bytes:
-        return self._packet(C.EVENT, P.build_event(code, details))
+        return self._packet(C.EVENT, P.build_event(self.spec, code, details))
 
     def _packets(self) -> list[bytes]:
         f = self.frame
-        out = [self._motion(), self._lap_data(), self._telemetry(), self._status()]
+        out = [self._motion(), self._lap_data(), self._telemetry(), self._status(), self._motion_ex()]
+        if self.spec.fmt >= 2026:
+            out.append(self._telemetry2())
         if f % 10 == 1:
             out += [self._session(), self._damage(), self._setups()]
         if f % 3 == 0:
@@ -298,7 +301,7 @@ class Simulator:
                 "g_lat": car.v ** 2 * self.track.curv[i] / 9.81, "g_lon": car.accel / 9.81, "g_vert": 1.0,
                 "yaw": heading,
             })
-        return self._packet(C.MOTION, P.build_cars(P.CAR_MOTION, cars))
+        return self._packet(C.MOTION, P.build_motion(self.spec, cars))
 
     def _lap_data(self) -> bytes:
         by_pos = sorted(self.cars, key=lambda c: c.position)
@@ -334,7 +337,7 @@ class Simulator:
                 "pit_lane_time_ms": min(65535, car.lane_ms), "pit_stop_timer_ms": min(65535, car.stop_ms),
                 "speed_trap_fastest": car.top_speed, "speed_trap_fastest_lap": 1,
             })
-        return self._packet(C.LAP_DATA, P.build_cars(P.LAP, cars, suffix=b"\xff\xff"))
+        return self._packet(C.LAP_DATA, P.build_cars(self.spec, P.LAP, cars, suffix=b"\xff\xff"))
 
     def _telemetry(self) -> bytes:
         tr, cars = self.track, []
@@ -363,7 +366,7 @@ class Simulator:
                 "engine_temp": 108, "tyre_pressure": [22.6, 22.6, 24.8, 24.8],
             })
         tail = P.TELEMETRY_TAIL.pack({"mfd_panel": 255, "mfd_panel_secondary": 255, "suggested_gear": 0})
-        return self._packet(C.CAR_TELEMETRY, P.build_cars(P.TELEMETRY, cars, suffix=tail))
+        return self._packet(C.CAR_TELEMETRY, P.build_cars(self.spec, self.spec.telemetry, cars, suffix=tail))
 
     def _status(self) -> bytes:
         cars = []
@@ -379,12 +382,50 @@ class Simulator:
                 "fia_flag": car.flag, "power_ice": 560000.0, "power_mguk": 120000.0,
                 "ers_store": 2.1e6 + 1.6e6 * math.sin(self.t / 11 + car.idx), "ers_mode": 1,
             })
-        return self._packet(C.CAR_STATUS, P.build_cars(P.STATUS, cars))
+        return self._packet(C.CAR_STATUS, P.build_cars(self.spec, self.spec.status, cars))
+
+    def _straights(self) -> list[tuple[float, float]]:
+        """Track sections where the car runs flat out (used for 2026 active aero zones)."""
+        if not hasattr(self, "_straight_cache"):
+            tr, out, start = self.track, [], None
+            for i in range(tr.n + 1):
+                fast = tr.speed[i % tr.n] > 75
+                if fast and start is None:
+                    start = i
+                elif not fast and start is not None:
+                    if i - start > 60:
+                        out.append((start * tr.ds, i * tr.ds))
+                    start = None
+            self._straight_cache = out
+        return self._straight_cache
+
+    def _motion_ex(self) -> bytes:
+        """Player wheel slip: the scripted car understeers on corner entry and locks fronts under hard braking."""
+        me, tr = self.cars[PLAYER_IDX], self.track
+        i = tr.index(max(me.total, 0.0))
+        steer = min(1.0, abs(tr.curv[i] * 45))
+        braking = tr.speed[(i + 4) % tr.n] < tr.speed[i] - 0.5
+        front, rear = 0.05 * steer * (1.6 if braking else 1.05), 0.05 * steer
+        lock = -0.22 if braking and tr.speed[i] - tr.speed[(i + 4) % tr.n] > 3.5 else -0.02
+        return self._packet(C.MOTION_EX, P.MOTION_EX.pack({
+            "slip_angle": [rear, rear, front, front], "slip_ratio": [0.02, 0.02, lock, lock],
+            "wheel_speed": [me.v] * 4, "front_aero_height": 0.03, "rear_aero_height": 0.07,
+        }))
+
+    def _telemetry2(self) -> bytes:
+        straights = self._straights()
+        cars = []
+        for car in self.cars:
+            s = car.total % self.track.length if car.total > 0 else 0.0
+            on_straight = any(a <= s <= b for a, b in straights)
+            cars.append({"aero_mode": int(on_straight), "aero_available": int(on_straight), "regs_2026": 1,
+                         "overtake_available": int(car.lap > 1 and not self.vsc), "overtake_active": 0})
+        return self._packet(C.CAR_TELEMETRY_2, P.build_cars(self.spec, P.TELEMETRY2, cars))
 
     def _damage(self) -> bytes:
         cars = [{"tyre_wear": car.wear, "fl_wing": car.wing_damage, "ice_wear": 12, "mguh_wear": 9, "mguk_wear": 14,
                  "es_wear": 7, "ce_wear": 6, "tc_wear": 11, "gearbox": 8} for car in self.cars]
-        return self._packet(C.CAR_DAMAGE, P.build_cars(P.DAMAGE, cars))
+        return self._packet(C.CAR_DAMAGE, P.build_cars(self.spec, P.DAMAGE, cars))
 
     def _setups(self) -> bytes:
         setup = {
@@ -395,12 +436,15 @@ class Simulator:
             "fr_pressure": 24.8, "fuel_load": self.total_laps * FUEL_PER_LAP + 1.2,
         }
         cars = [setup if i == PLAYER_IDX else {} for i in range(len(self.cars))]
-        return self._packet(C.CAR_SETUPS, P.build_cars(P.SETUP, cars, suffix=b"\0\0\0\0"))
+        return self._packet(C.CAR_SETUPS, P.build_cars(self.spec, P.SETUP, cars, suffix=b"\0\0\0\0"))
 
     def _participants(self) -> bytes:
-        cars = [{"ai_controlled": int(i != PLAYER_IDX), "driver_id": i, "team_id": team, "race_number": number,
-                 "name": name, "your_telemetry": 1} for i, (name, team, number) in enumerate(DRIVERS)]
-        return self._packet(C.PARTICIPANTS, P.build_cars(P.PARTICIPANT, cars, prefix=bytes([len(cars)])))
+        team_base = 476 if self.spec.fmt >= 2026 else 0  # the Season Pack uses its own 2026 team ids
+        cars = [{"ai_controlled": int(i != PLAYER_IDX), "driver_id": i, "team_id": team + team_base,
+                 "race_number": number, "name": name, "your_telemetry": 1}
+                for i, (name, team, number) in enumerate(DRIVERS)]
+        return self._packet(C.PARTICIPANTS, P.build_cars(self.spec, self.spec.participant, cars,
+                                                         prefix=bytes([len(cars)])))
 
     def _session(self) -> bytes:
         me = self.cars[PLAYER_IDX]
@@ -412,12 +456,14 @@ class Simulator:
             rain = self.t + offset * 60 >= 420
             forecast.append({"session_type": 15, "time_offset": offset, "weather": 3 if rain else 1,
                              "track_temp": 31 - (5 if rain else 0), "air_temp": 24, "rain": 70 if rain else 10})
-        return self._packet(C.SESSION, P.build_session({
+        return self._packet(C.SESSION, P.build_session(self.spec, {
             "weather": self.weather, "track_temp": 26 if self.weather >= 3 else 31, "air_temp": 24,
             "total_laps": self.total_laps, "track_length": int(self.track.length), "session_type": 15,
             "track_id": 11, "pit_speed_limit": 80, "marshal_zones": zones, "safety_car": 2 if self.vsc else 0,
             "forecast": forecast, "pit_ideal_lap": max(2, self.total_laps // 2),
             "pit_latest_lap": max(2, self.total_laps // 2 + 2), "pit_rejoin_pos": 12,
+            "aero_zones": [{"start": a, "end": b, "kind": "full"} for a, b in self._straights()],
+            "drs_zones": [{"start": a, "end": b} for a, b in self._straights()[:2]],
             "s2_start": 0.33 * self.track.length, "s3_start": 0.68 * self.track.length,
         }))
 
@@ -462,15 +508,16 @@ class Simulator:
                 "num_pit_stops": car.pits, "result_status": 3 if car.finished else 7 if car.retired else 4,
                 "best_lap_ms": car.best_ms, "total_race_time": car.finish_time, "num_tyre_stints": len(car.stints) + 1,
             })
-        return self._packet(C.FINAL_CLASSIFICATION, P.build_cars(P.CLASSIFICATION, cars, prefix=bytes([len(cars)])))
+        return self._packet(C.FINAL_CLASSIFICATION, P.build_cars(self.spec, P.CLASSIFICATION, cars, prefix=bytes([len(cars)])))
 
 
-def run(host: str = "127.0.0.1", port: int = 20777, speed: float = 1.0, laps: int = 8, loop: bool = True) -> None:
+def run(host: str = "127.0.0.1", port: int = 20777, speed: float = 1.0, laps: int = 8, loop: bool = True,
+        fmt: int = 2025) -> None:
     """Blocking sender loop (30 Hz real time)."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     seed = 7
     while True:
-        sim = Simulator(laps=laps, seed=seed)
+        sim = Simulator(laps=laps, seed=seed, fmt=fmt)
         while not sim.done:
             started = time.perf_counter()
             for _ in range(max(1, round(speed))):
@@ -489,8 +536,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=20777)
     parser.add_argument("--speed", type=float, default=1.0, help="time multiplier (e.g. 5 = five times faster)")
     parser.add_argument("--laps", type=int, default=8)
+    parser.add_argument("--format", type=int, choices=(2025, 2026), default=2025)
     args = parser.parse_args()
-    run(args.host, args.port, args.speed, args.laps)
+    run(args.host, args.port, args.speed, args.laps, fmt=args.format)
 
 
 if __name__ == "__main__":

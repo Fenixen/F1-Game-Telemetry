@@ -9,6 +9,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from .analysis import BalanceTracker
+from .storage import Store
 from .udp import constants as C
 
 TRACE_BUCKET_M = 8      # distance resolution of lap telemetry traces
@@ -69,17 +71,23 @@ class Car:
 
 
 class RaceState:
-    def __init__(self):
+    def __init__(self, store: Store | None = None):
         self.last_rx = 0.0
+        self.store = store or Store(None)
+        self.fmt = 0
+        self.traces: dict[str, dict | None] = {}
+        self.session: dict = {}
         self.reset(0)
 
     def reset(self, session_uid: int) -> None:
+        # Laps from the previous session at the same track stay useful as a comparison
+        self._carry = {"track": self.session.get("track_id"), "traces": self.traces}
         self.session_uid = session_uid
         self.session_time = 0.0
         self.player_idx = 0
         self.num_active = 0
         self.session: dict = {}
-        self.cars = [Car(i) for i in range(C.NUM_CARS)]
+        self.cars = [Car(i) for i in range(C.MAX_CARS)]
         self.setup: dict = {}
         self.tyre_sets: list[dict] = []
         self.fitted_set = 255
@@ -89,7 +97,10 @@ class RaceState:
         self.g_lat = self.g_lon = 0.0
         self.suggested_gear = 0
         self.buttons = 0
-        self.traces: dict[str, dict | None] = {"cur": None, "last": None, "best": None}
+        # cur = lap in progress, last/best = this session, ref = fastest lap ever driven on this track
+        self.traces = {"cur": None, "last": None, "best": None, "ref": None}
+        self.balance = BalanceTracker()
+        self.aero: dict = {}          # 2026: active aero + overtake state of the player car
         self.outline: list[tuple[float, float] | None] = []
         self.outline_filled = 0
         self.outline_version = 0
@@ -150,7 +161,8 @@ class RaceState:
             self.reset(header["session_uid"])
             events.append(("session_started", {}))
         self.session_time = header["session_time"]
-        self.player_idx = min(header["player_idx"], C.NUM_CARS - 1)
+        self.fmt = header["packet_format"]
+        self.player_idx = min(header["player_idx"], C.MAX_CARS - 1)
 
         pid = header["packet_id"]
         if pid == C.MOTION:
@@ -183,16 +195,45 @@ class RaceState:
         elif pid == C.TYRE_SETS:
             if body["car_idx"] == self.player_idx:
                 self.tyre_sets, self.fitted_set = body["sets"], body["fitted_idx"]
+        elif pid == C.MOTION_EX:
+            me = self.player
+            if me.on_track:
+                self.balance.feed(me.tel, body, me.lap.get("lap_distance", 0.0))
+        elif pid == C.CAR_TELEMETRY_2:
+            self.aero = body["cars"][self.player_idx]
         elif pid == C.FINAL_CLASSIFICATION:
             self.final = body
             events.append(("final", body))
         return events
 
     def _on_session(self, body: dict) -> None:
+        first = not self.session
         if body["track_length"] != self.track_length:
             n = body["track_length"] // OUTLINE_BUCKET_M + 1
             self.outline, self.outline_filled = [None] * n, 0
+            saved = self.store.track(body["track_id"])["outline"]
+            if saved and saved.get("track_length") == body["track_length"] and len(saved["pts"]) == n:
+                self.outline = [tuple(p) if p else None for p in saved["pts"]]
+                self.outline_filled = sum(p is not None for p in self.outline)
+                self.outline_version += 1
         self.session = body
+        if first:
+            self._restore_traces(body)
+
+    def _restore_traces(self, session: dict) -> None:
+        n = session["track_length"] // TRACE_BUCKET_M + 2
+        if self._carry["track"] == session["track_id"]:
+            for key in ("last", "best"):
+                trace = self._carry["traces"].get(key)
+                if trace and len(trace["t"]) == n:
+                    self.traces[key] = trace
+        ref = self.store.track(session["track_id"])["reference"]
+        if ref and ref.get("track_length") == session["track_length"] and len(ref["t"]) == n:
+            self.traces["ref"] = ref
+
+    def _save_outline(self) -> None:
+        if self.session and self.outline_filled >= 0.97 * len(self.outline):
+            self.store.save_outline(self.session["track_id"], self.outline, self.track_length)
 
     def _on_motion(self, body: dict) -> None:
         n = len(self.outline)
@@ -256,7 +297,7 @@ class RaceState:
 
     def _on_history(self, body: dict) -> None:
         idx = body["car_idx"]
-        if idx >= C.NUM_CARS:
+        if idx >= C.MAX_CARS:
             return
         car, laps = self.cars[idx], body["laps"]
         car.stints = body["stints"]
@@ -303,7 +344,15 @@ class RaceState:
             best = self.traces["best"]
             if valid and (best is None or ms < best["ms"]):
                 self.traces["best"] = cur
+            if valid and self.session:
+                track = self.session["track_id"]
+                trace = {k: v for k, v in cur.items() if k != "filled"}
+                if self.store.save_reference(track, trace, self.track_length):
+                    self.traces["ref"] = trace | {"track_length": self.track_length}
+                self.store.record_setup(track, self.setup, ms, self.session_type)
+                self._save_outline()
         self.traces["cur"] = None
+        self.balance.finish_lap(valid)
 
     def _sample_trace(self) -> None:
         me = self.player
@@ -327,9 +376,13 @@ class RaceState:
         cur["steer"][bucket] = round(tel["steer"] * 100)
         cur["t"][bucket] = me.lap["cur_lap_ms"]
 
+    def reference_trace(self) -> dict | None:
+        """Lap to compare against: session best, or the all-time best here before there is one."""
+        return self.traces["best"] or self.traces["ref"]
+
     def live_delta_ms(self) -> int | None:
-        """Time gained/lost against the personal best lap at the same point on track."""
-        cur, best, lap = self.traces["cur"], self.traces["best"], self.player.lap
+        """Time gained/lost against the reference lap at the same point on track."""
+        cur, best, lap = self.traces["cur"], self.reference_trace(), self.player.lap
         if not cur or not best or not lap or len(best["t"]) != len(cur["t"]):
             return None
         bucket = int(lap["lap_distance"] // TRACE_BUCKET_M)

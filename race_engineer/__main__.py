@@ -8,8 +8,11 @@ import socket
 import sys
 import threading
 
+from pathlib import Path
+
 from . import simulator
 from .server import serve
+from .storage import Store, default_dir
 
 
 def lan_addresses() -> tuple[str | None, list[str]]:
@@ -49,6 +52,13 @@ def main() -> None:
     parser.add_argument("--demo", action="store_true", help="spustit i simulátor závodu (bez hry)")
     parser.add_argument("--demo-speed", type=float, default=1.0, help="zrychlení simulátoru")
     parser.add_argument("--demo-laps", type=int, default=8, help="počet kol simulovaného závodu")
+    parser.add_argument("--demo-format", type=int, choices=(2025, 2026), default=2025,
+                        help="UDP formát simulátoru (2026 = sezónní balíček 2026)")
+    parser.add_argument("--record", action="store_true",
+                        help="nahrávat telemetrii ze hry do souboru (pro ladění, cca 100–300 MB/h)")
+    parser.add_argument("--replay", metavar="SOUBOR", type=Path, help="přehrát dříve nahraný záznam")
+    parser.add_argument("--replay-speed", type=float, default=1.0, help="rychlost přehrávání záznamu")
+    parser.add_argument("--data-dir", type=Path, default=None, help="složka s uloženými daty tratí")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s", datefmt="%H:%M:%S")
@@ -72,12 +82,21 @@ def main() -> None:
 
     if args.demo:
         threading.Thread(
-            target=simulator.run, kwargs={"port": args.udp_port, "speed": args.demo_speed, "laps": args.demo_laps},
+            target=simulator.run, kwargs={"port": args.udp_port, "speed": args.demo_speed, "laps": args.demo_laps,
+                                          "fmt": args.demo_format},
             daemon=True).start()
         print("  DEMO: běží simulovaný závod.\n")
 
     try:
-        asyncio.run(serve("0.0.0.0", args.http_port, args.udp_host, args.udp_port, forward))
+        data_dir = args.data_dir or default_dir()
+        # The demo must not overwrite your real reference laps and setups
+        store = Store(None if args.demo else data_dir)
+        print(f"  Data tratí:  {data_dir}" if not args.demo else "  Data tratí:  v demu se neukládají")
+        record_dir = data_dir / "recordings" if args.record else None
+        if args.replay and not args.replay.is_file():
+            sys.exit(f"Záznam {args.replay} neexistuje.")
+        asyncio.run(serve("0.0.0.0", args.http_port, args.udp_host, args.udp_port, forward, store,
+                          record_dir, args.replay, args.replay_speed))
     except KeyboardInterrupt:
         print("\n  Inženýr končí. Díky za závod!")
     except OSError as exc:

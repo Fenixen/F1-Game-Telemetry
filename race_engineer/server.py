@@ -2,23 +2,27 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import logging
 import struct
 import sys
+import time
 from pathlib import Path
-from typing import Callable
+from typing import BinaryIO, Callable
 
 from . import snapshots
 from .engineer import setup_advisor
 from .engineer.rules import Engineer
 from .state import RaceState
+from .storage import Store
 from .udp.packets import UnsupportedFormat, parse_packet
 from .webserver import WebServer, WebSocket, WebSocketClosed
 
 log = logging.getLogger("race_engineer")
 
 FAST_HZ, SLOW_HZ, ENGINEER_HZ = 20, 4, 5
+_RECORD = struct.Struct("<dI")  # recording = gzip stream of (seconds since start, length) + datagram
 
 FRONTEND_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent)) / "frontend"
 
@@ -32,27 +36,71 @@ class TelemetryProtocol(asyncio.DatagramProtocol):
     def datagram_received(self, data: bytes, addr) -> None:
         if self.forward_transport is not None:
             self.forward_transport.sendto(data)
-        try:
-            parsed = parse_packet(data)
-        except UnsupportedFormat as exc:
-            if not self._warned_format:
-                self._warned_format = True
-                log.warning("Hra posílá UDP formát %s. V nastavení telemetrie zvol 'UDP Format: 2025'.", exc)
-            return
-        except (struct.error, IndexError, UnicodeError):
-            return  # malformed datagram: never let network input crash the listener
-        if parsed:
-            self.hub.engineer.on_events(self.hub.state.apply(*parsed))
+        self.hub.feed(data)
+
+
+class Recorder:
+    """Saves the raw UDP stream so a real session can be replayed later (debugging, new game versions)."""
+
+    def __init__(self, folder: Path):
+        folder.mkdir(parents=True, exist_ok=True)
+        self.path = folder / time.strftime("session-%Y%m%d-%H%M%S.f1rec.gz")
+        self._file: BinaryIO = gzip.open(self.path, "wb", compresslevel=5)
+        self._start = time.monotonic()
+
+    def write(self, data: bytes) -> None:
+        self._file.write(_RECORD.pack(time.monotonic() - self._start, len(data)) + data)
+
+    def close(self) -> None:
+        self._file.close()
+
+
+async def replay(hub: "Hub", path: Path, speed: float = 1.0) -> None:
+    """Feeds a recording into the hub with its original timing."""
+    log.info("Přehrávám záznam %s", path)
+    with gzip.open(path, "rb") as f:
+        started = time.monotonic()
+        while head := f.read(_RECORD.size):
+            if len(head) < _RECORD.size:
+                break
+            at, length = _RECORD.unpack(head)
+            data = f.read(length)
+            wait = at / speed - (time.monotonic() - started)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            hub.feed(data)
+    log.info("Záznam dohrál.")
 
 
 class Hub:
     """Owns the state and pushes it to every connected browser."""
 
-    def __init__(self):
-        self.state = RaceState()
+    def __init__(self, store: Store | None = None, recorder: Recorder | None = None):
+        self.state = RaceState(store)
         self.clients: set[WebSocket] = set()
         self.engineer = Engineer(self.state, self._on_radio)
+        self.recorder = recorder
         self._outline_sent = -1
+        self._warned_format = False
+        # Last good views of a session, shown while a new session has no data yet
+        self._last_slow: dict | None = None
+        self._last_traces: dict | None = None
+
+    def feed(self, data: bytes) -> None:
+        """One UDP datagram from the game (or from a recording)."""
+        if self.recorder:
+            self.recorder.write(data)
+        try:
+            parsed = parse_packet(data)
+        except UnsupportedFormat as exc:
+            if not self._warned_format:
+                self._warned_format = True
+                log.warning("Hra posílá UDP formát %s. V nastavení telemetrie zvol 'UDP Format' 2025 nebo 2026.", exc)
+            return
+        except (struct.error, IndexError, UnicodeError, ValueError):
+            return  # malformed datagram: never let network input crash the listener
+        if parsed:
+            self.engineer.on_events(self.state.apply(*parsed))
 
     def _on_radio(self, msg: dict) -> None:
         log.info("RADIO  %s", msg["text"])
@@ -89,7 +137,13 @@ class Hub:
     async def _slow_tick(self) -> None:
         if not self.clients:
             return
-        await self.broadcast("slow", snapshots.slow(self.state))
+        snap = snapshots.slow(self.state)
+        if snap["ready"]:
+            self._last_slow = snap
+        elif self._last_slow:
+            # New session without data yet (menus, garage): keep showing the last one, marked as old
+            snap = self._last_slow | {"stale": True, "connected": self.state.connected}
+        await self.broadcast("slow", snap)
         if self.state.outline_version != self._outline_sent:
             self._outline_sent = self.state.outline_version
             await self.broadcast("outline", snapshots.outline(self.state))
@@ -149,7 +203,14 @@ class Hub:
         if kind == "query" and isinstance(cmd.get("q"), str):
             self.engineer.answer(cmd["q"][:32])
         elif kind == "traces":
-            await ws.send_json({"t": "traces", "d": snapshots.traces(self.state)})
+            data = snapshots.traces(self.state)
+            if data["cur"] or data["last"] or data["best"] or data["ref"]:
+                self._last_traces = data
+            elif self._last_traces:
+                data = self._last_traces | {"stale": True}
+            await ws.send_json({"t": "traces", "d": data})
+        elif kind == "setup_info":
+            await ws.send_json({"t": "setupInfo", "d": snapshots.setup_info(self.state)})
         elif kind == "setup" and isinstance(cmd.get("issue"), str):
             await ws.send_json({"t": "advice", "d": setup_advisor.advise(self.state.setup, cmd["issue"])})
         elif kind == "verbosity" and cmd.get("v") in (1, 2, 3):
@@ -158,13 +219,22 @@ class Hub:
 
 
 async def serve(http_host: str = "0.0.0.0", http_port: int = 8080, udp_host: str = "0.0.0.0",
-                udp_port: int = 20777, forward: tuple[str, int] | None = None) -> None:
+                udp_port: int = 20777, forward: tuple[str, int] | None = None, store: Store | None = None,
+                record_dir: Path | None = None, replay_file: Path | None = None, replay_speed: float = 1.0) -> None:
     """Runs until cancelled (Ctrl+C)."""
-    hub = Hub()
+    recorder = Recorder(record_dir) if record_dir else None
+    if recorder:
+        log.info("Nahrávám telemetrii do %s", recorder.path)
+    hub = Hub(store, recorder)
     stop = await hub.start(udp_host, udp_port, forward)
     server = await WebServer(FRONTEND_DIR, hub.ws_handler).start(http_host, http_port)
+    replaying = asyncio.create_task(replay(hub, replay_file, replay_speed)) if replay_file else None
     try:
         async with server:
             await server.serve_forever()
     finally:
         stop()
+        if replaying:
+            replaying.cancel()
+        if recorder:
+            recorder.close()

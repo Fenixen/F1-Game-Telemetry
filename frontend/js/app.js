@@ -1,6 +1,7 @@
 // App shell: WebSocket connection, tab routing and the top status bar.
-import { $, esc, fmtClock } from "./util.js";
+import { $, esc, fmtClock, prefs } from "./util.js";
 import * as radio from "./radio.js";
+import focus from "./views/focus.js";
 import dashboard from "./views/dashboard.js";
 import timing from "./views/timing.js";
 import map from "./views/map.js";
@@ -10,10 +11,12 @@ import setup from "./views/setup.js";
 import car from "./views/car.js";
 import settings from "./views/settings.js";
 
-const VIEWS = [dashboard, timing, map, strategy, telemetry, setup, car, settings];
+const VIEWS = [focus, dashboard, timing, map, strategy, telemetry, setup, car, settings];
 const WEATHER_ICON = ["☀️", "🌤️", "☁️", "🌦️", "🌧️", "⛈️"];
 
-export const store = { slow: null, fast: null, outline: null, traces: null, advice: null, hello: null, verbosity: 2 };
+export const store = {
+  slow: null, fast: null, outline: null, traces: null, advice: null, setupInfo: null, hello: null, verbosity: 2,
+};
 let socket = null, retry = 500, active = null;
 
 function send(message) {
@@ -44,6 +47,7 @@ function handle(type, data) {
     case "outline": store.outline = data; active.outline?.(data, store); break;
     case "traces": store.traces = data; active.traces?.(data, store); break;
     case "advice": store.advice = data; active.advice?.(data, store); break;
+    case "setupInfo": store.setupInfo = data; active.setupInfo?.(data, store); break;
     case "verbosity": store.verbosity = data; active.verbosity?.(data, store); break;
     case "hello": store.hello = data; store.verbosity = data.verbosity; radio.setHistory(data.radio); break;
   }
@@ -62,6 +66,12 @@ function paintShell() {
   const s = store.slow, ready = Boolean(s?.ready);
   $("#nodata").hidden = ready || active.always;
   $("#views").hidden = !ready && !active.always;
+  const banner = $("#stale");
+  banner.hidden = !s?.stale;
+  if (s?.stale) {
+    banner.textContent = `Zobrazuji poslední session (${s.session.typeName} · ${s.session.track}). ` +
+      (s.connected ? "Nová session ještě neposlala data." : "Hra teď neposílá data.");
+  }
   if (!ready) {
     $("#top-session").textContent = "—"; $("#top-progress").textContent = "—";
     $("#top-weather").textContent = "—"; $("#top-flag").hidden = true;
@@ -85,6 +95,8 @@ function paintShell() {
 function show(view) {
   active?.hide?.();
   active = view;
+  $("#app").classList.toggle("wide", Boolean(view.wide));
+  $("#radio").classList.remove("open");
   for (const tab of document.querySelectorAll(".tab")) tab.classList.toggle("active", tab.dataset.id === view.id);
   const host = $("#views");
   host.innerHTML = "";
@@ -96,7 +108,13 @@ function show(view) {
   $("#main").scrollTop = 0;
 }
 
+/** Text size for the whole app: rem-based layout scales with the root font size. */
+export function applyScale(scale) {
+  document.documentElement.style.fontSize = `${15 * scale}px`;
+}
+
 function boot() {
+  applyScale(prefs.get("uiScale", 1.15));
   store.send = send;  // views talk to the server through the store, not by importing the shell
   $("#tabs").innerHTML = VIEWS.map((v) =>
     `<button class="tab" data-id="${v.id}"><svg viewBox="0 0 24 24">${v.icon}</svg>${esc(v.title)}</button>`).join("");
@@ -108,7 +126,7 @@ function boot() {
   $("#radio-toggle").addEventListener("click", () => $("#radio").classList.toggle("open"));
   $("#splash-go").addEventListener("click", () => { radio.unlock(); $("#splash").remove(); });
   $("#splash-mute").addEventListener("click", () => { radio.configure({ enabled: false }); $("#splash").remove(); });
-  show(dashboard);
+  show(focus);
   connect();
 }
 

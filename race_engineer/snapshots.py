@@ -5,7 +5,7 @@ Two rates keep the WebSocket light: `fast` carries what changes every frame
 """
 from __future__ import annotations
 
-from . import strategy
+from . import analysis, strategy
 from .engineer import setup_advisor
 from .state import OUTLINE_BUCKET_M, TRACE_BUCKET_M, TRACE_CHANNELS, RaceState
 from .udp import constants as C
@@ -35,8 +35,17 @@ def fast(state: RaceState) -> dict:
         "sector": lap["sector"], "invalid": lap["lap_invalid"],
         "gLat": round(state.g_lat, 2), "gLon": round(state.g_lon, 2),
         "pitLim": status["pit_limiter"], "sugGear": state.suggested_gear, "bias": status["front_brake_bias"],
-        "engT": tel["engine_temp"],
+        "engT": tel["engine_temp"], "aero": _aero(state),
     }
+
+
+def _aero(state: RaceState) -> dict | None:
+    """2026 regulations: active aero mode and the overtake (manual override) energy boost."""
+    a = state.aero
+    if not a or not a.get("regs_2026"):
+        return None
+    return {"mode": a["aero_mode"], "avail": a["aero_available"], "otAvail": a["overtake_available"],
+            "otActive": a["overtake_active"]}
 
 
 def _car_status(state: RaceState, lap: dict) -> str:
@@ -92,7 +101,9 @@ def _session(state: RaceState) -> dict:
         "zones": [{"s": round(z["start"], 3), "f": z["flag"]} for z in s.get("marshal_zones", [])],
         "pitSpeed": s.get("pit_speed_limit", 0), "trackLen": s.get("track_length", 0),
         "s2": round(s.get("s2_start", 0) / length, 4), "s3": round(s.get("s3_start", 0) / length, 4),
-        "paused": s.get("paused", 0),
+        "paused": s.get("paused", 0), "fmt": state.fmt,
+        "aeroZones": [{"s": round(z["start"]), "e": round(z["end"]), "k": z["kind"]} for z in s.get("aero_zones", [])],
+        "drsZones": [{"s": round(z["start"]), "e": round(z["end"])} for z in s.get("drs_zones", [])],
     }
 
 
@@ -151,7 +162,7 @@ def slow(state: RaceState) -> dict:
         "connected": state.connected, "ready": True, "session": _session(state), "player": _player(state),
         "cars": cars, "strategy": strategy.compute(state), "lapLog": state.lap_log[-80:],
         "fl": fl, "purple": purple, "outlineV": state.outline_version,
-        "setupView": setup_advisor.describe(state.setup), "setupNotes": setup_advisor.observations(state),
+        "setupView": setup_advisor.describe(state.setup),
     }
 
 
@@ -161,7 +172,20 @@ def outline(state: RaceState) -> dict:
 
 
 def traces(state: RaceState) -> dict:
-    out = {"bucket": TRACE_BUCKET_M}
+    out: dict = {"bucket": TRACE_BUCKET_M}
     for key, trace in state.traces.items():
-        out[key] = {ch: trace[ch] for ch in TRACE_CHANNELS} | {"ms": trace["ms"]} if trace else None
+        out[key] = {ch: trace[ch] for ch in TRACE_CHANNELS} | {"ms": trace.get("ms", 0)} if trace else None
+    ref = state.reference_trace()
+    if out.get("ref") and state.traces["best"] and state.traces["ref"]["ms"] >= state.traces["best"]["ms"]:
+        out["ref"] = None  # the all-time best is this session's best: do not draw it twice
+    corners = analysis.detect_corners(ref, TRACE_BUCKET_M)
+    out["corners"] = [{k: c[k] for k in ("name", "apex_m", "start_m", "end_m", "brake_m", "min_kmh")} for c in corners]
+    lap = state.traces["last"]
+    out["coaching"] = analysis.compare_corners(ref, lap, corners, TRACE_BUCKET_M) if lap is not ref else []
+    out["refKind"] = "best" if state.traces["best"] else "ref" if ref else None
     return out
+
+
+def setup_info(state: RaceState) -> dict:
+    return {"rec": setup_advisor.recommend(state), "library": setup_advisor.library(state),
+            "current": setup_advisor.describe(state.setup)}

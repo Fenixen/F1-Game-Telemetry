@@ -1,5 +1,5 @@
 // Radio / voice settings and a short how-to.
-import { esc } from "../util.js";
+import { esc, prefs } from "../util.js";
 import * as radio from "../radio.js";
 
 let host = null, storeRef = null;
@@ -21,6 +21,11 @@ function render() {
       ${s.supported ? "" : '<p class="red">Tenhle prohlížeč neumí převod textu na řeč. Hlášky uvidíš jen v textu.</p>'}
       ${voices.length ? "" : `<p class="help">Na iPadu přidej český hlas v <b>Nastavení → Zpřístupnění → Předčítání obsahu → Hlasy → Čeština</b>
         (nejlépe „Zuzana – vylepšená“).</p>`}
+    </div>
+    <div class="card span2"><h3>Velikost písma</h3>
+      <div class="field"><span>Celá aplikace</span>${seg("scale", [[1, "Normální"], [1.15, "Velké"], [1.3, "Větší"], [1.5, "Obří"]],
+        prefs.get("uiScale", 1.15))}</div>
+      <p class="help">Na iPadu za jízdy doporučuju „Velké“ nebo „Větší“. Hlavní obrazovka <b>Závod</b> má čísla velká vždy.</p>
     </div>
     <div class="card"><h3>Jak moc má inženýr mluvit</h3>
       <div class="field"><span>Upovídanost</span>${seg("verbosity", [[1, "Jen kritické"], [2, "Normální"], [3, "Všechno"]], storeRef.verbosity)}</div>
@@ -52,6 +57,7 @@ function mount(root, store) {
     if (button) {
       const kind = button.parentElement.dataset.seg, value = Number(button.dataset.v);
       if (kind === "verbosity") { store.verbosity = value; store.send({ t: "verbosity", v: value }); }
+      else if (kind === "scale") { prefs.set("uiScale", value); document.documentElement.style.fontSize = `${15 * value}px`; }
       else radio.configure({ [kind]: Boolean(value) });
       if (kind === "enabled" && value) radio.unlock();
       render();

@@ -65,7 +65,7 @@ export function lineChart(canvas, height, series, opts = {}) {
   if (!all.length) {
     ctx.fillStyle = "#5a6673"; ctx.font = "13px system-ui"; ctx.textAlign = "center";
     ctx.fillText(opts.empty || "Zatím žádná data", width / 2, height / 2);
-    return;
+    return null;
   }
   const xs = all.map((p) => p[0]), ys = all.map((p) => p[1]);
   const x0 = opts.xMin ?? Math.min(...xs), x1 = Math.max(opts.xMax ?? -Infinity, Math.max(...xs), x0 + 1);
@@ -100,6 +100,14 @@ export function lineChart(canvas, height, series, opts = {}) {
     ctx.beginPath(); ctx.moveTo(pad.l, Y(line.y)); ctx.lineTo(width - pad.r, Y(line.y)); ctx.stroke();
     ctx.setLineDash([]);
   }
+  // Vertical markers (corners) and the shared cursor line
+  ctx.font = "700 11px system-ui"; ctx.textAlign = "center";
+  for (const v of opts.vLines || []) {
+    if (v.x < x0 || v.x > x1) continue;
+    ctx.strokeStyle = "rgba(255,255,255,.10)"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(X(v.x), pad.t); ctx.lineTo(X(v.x), height - pad.b); ctx.stroke();
+    if (v.label) { ctx.fillStyle = "#8492a0"; ctx.fillText(v.label, X(v.x), pad.t + 10); }
+  }
   for (const s of series) {
     if (!s.points.length) continue;
     ctx.strokeStyle = s.color; ctx.lineWidth = s.width || 2; ctx.setLineDash(s.dash || []);
@@ -111,6 +119,12 @@ export function lineChart(canvas, height, series, opts = {}) {
       for (const [x, y] of s.points) { ctx.beginPath(); ctx.arc(X(x), Y(y), 2.5, 0, 6.3); ctx.fill(); }
     }
   }
+  if (opts.cursor !== undefined && opts.cursor !== null && opts.cursor >= x0 && opts.cursor <= x1) {
+    ctx.strokeStyle = "#ffd23b"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(X(opts.cursor), pad.t); ctx.lineTo(X(opts.cursor), height - pad.b); ctx.stroke();
+  }
+  // Inverse mapping so callers can turn a tap position into an x value
+  return { invX: (px) => x0 + ((px - pad.l) / (width - pad.l - pad.r)) * (x1 - x0) };
 }
 
 /** Per-device preferences. localStorage can be blocked (private mode), so every access is guarded. */

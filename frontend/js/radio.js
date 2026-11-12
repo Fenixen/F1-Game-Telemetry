@@ -99,6 +99,7 @@ function render(msg, fresh) {
 export function onMessage(msg, fresh = true) {
   const repeated = state.seen.has(msg.id);
   if (!repeated) { state.seen.add(msg.id); render(msg, fresh); }
+  document.dispatchEvent(new CustomEvent("radio", { detail: msg }));  // e.g. the race view shows the latest call
   if (fresh) speak(msg);
 }
 

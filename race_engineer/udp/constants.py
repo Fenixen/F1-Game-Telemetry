@@ -1,18 +1,12 @@
 """Lookup tables for IDs used in the F1 25 UDP specification."""
 
-PACKET_FORMAT = 2025
-NUM_CARS = 22
+SUPPORTED_FORMATS = (2025, 2026)  # 2026 = F1 25 with the 2026 Season Pack
+MAX_CARS = 24                     # 22 in format 2025, 24 in format 2026
 
 # Packet IDs
 MOTION, SESSION, LAP_DATA, EVENT, PARTICIPANTS, CAR_SETUPS, CAR_TELEMETRY, CAR_STATUS = range(8)
 FINAL_CLASSIFICATION, LOBBY_INFO, CAR_DAMAGE, SESSION_HISTORY, TYRE_SETS, MOTION_EX = range(8, 14)
-TIME_TRIAL, LAP_POSITIONS = 14, 15
-
-# Expected datagram sizes (bytes, incl. 29-byte header) per packet ID
-PACKET_SIZES = {
-    0: 1349, 1: 753, 2: 1285, 3: 45, 4: 1284, 5: 1133, 6: 1352, 7: 1239,
-    8: 1042, 9: 954, 10: 1041, 11: 1460, 12: 231, 13: 273, 14: 101, 15: 1131,
-}
+TIME_TRIAL, LAP_POSITIONS, CAR_TELEMETRY_2 = 14, 15, 16
 
 # Wheel arrays in the UDP spec are always ordered RL, RR, FL, FR
 WHEELS = ("RL", "RR", "FL", "FR")
@@ -24,7 +18,7 @@ TRACKS = {
     17: "Red Bull Ring", 18: "Soči", 19: "Mexiko", 20: "Baku", 21: "Sakhir (krátký)",
     22: "Silverstone (krátký)", 23: "Austin (krátký)", 24: "Suzuka (krátká)", 25: "Hanoj",
     26: "Zandvoort", 27: "Imola", 28: "Portimão", 29: "Džidda", 30: "Miami", 31: "Las Vegas",
-    32: "Losail", 39: "Silverstone (reverse)", 40: "Red Bull Ring (reverse)", 41: "Zandvoort (reverse)",
+    32: "Losail", 42: "Madrid", 39: "Silverstone (reverse)", 40: "Red Bull Ring (reverse)", 41: "Zandvoort (reverse)",
 }
 
 SESSION_TYPES = {
@@ -47,6 +41,9 @@ TEAMS = {
     6: ("Racing Bulls", "#6692FF"), 7: ("Haas", "#B6BABD"), 8: ("McLaren", "#FF8000"),
     9: ("Kick Sauber", "#52E252"), 41: ("F1 Generic", "#9aa4ad"), 104: ("Vlastní tým", "#c9a227"),
 }
+# 2026 Season Pack teams (476-486): the ten existing teams in their 2026 order, plus Audi and Cadillac
+TEAMS.update({476 + i: TEAMS[i] for i in range(9)})
+TEAMS.update({485: ("Audi", "#C40F2F"), 486: ("Cadillac", "#D4D7DB")})
 DEFAULT_TEAM = ("—", "#9aa4ad")
 
 # visual compound id -> (short, name, colour)
